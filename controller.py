@@ -57,9 +57,8 @@ def count_mamcl(code):
     return max_chain
 
 def count_noav_method(method_code):
-    # Improved: Collect unique attribute accesses per method
-    attributes = set()
-    # Match: obj.attr or this.attr, but not method calls (no '(' after dot)
+    # Hitung total akses atribut (bukan hanya unik)
+    attributes = []
     pattern = re.compile(r'\b(?:this|[a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b(?!\s*\()')
     for line in method_code.splitlines():
         stripped = line.strip()
@@ -69,7 +68,7 @@ def count_noav_method(method_code):
         if stripped.startswith(("class ", "fun ", "interface ", "package ", "import ", "var ", "val ")):
             continue
         for match in pattern.findall(stripped):
-            attributes.add(match)
+            attributes.append(match)
     return len(attributes)
 
 def count_cm_method(method_code, all_methods_in_file):
@@ -152,21 +151,18 @@ def extracted_method(file_path):
         parser = Parser(code)
         result = parser.parse()
 
-        # Extract package name from AST or fallback to file name
+        # Extract package name from AST or fallback to 'UNKNOWN'
         if hasattr(result, 'package') and result.package:
             package_name = result.package.name if hasattr(result.package, 'name') else str(result.package)
         else:
-            import os
-            package_name = os.path.splitext(os.path.basename(file_path))[0]
+            package_name = "UNKNOWN"
         # --- PACKAGE-LEVEL METRICS ---
-        # Access declarations from the KotlinFile node
         declarations = result.declarations if hasattr(result, 'declarations') else []
         class_decls = [n for n in declarations if isinstance(n, node.ClassDeclaration)]
         interface_decls = [n for n in declarations if isinstance(n, node.InterfaceDeclaration)]
         function_decls = [n for n in declarations if isinstance(n, node.FunctionDeclaration)]
 
         # --- PACKAGE-LEVEL METRICS ---
-        # Calculate package-level metrics ONCE per file/package
         nomnamm_package = sum(1 for f in function_decls if not f.name.startswith(("get", "set", "is")))
         for c in class_decls:
             if hasattr(c, 'body') and c.body and hasattr(c.body, 'members'):
@@ -174,40 +170,24 @@ def extracted_method(file_path):
                     if isinstance(m, node.FunctionDeclaration) and not m.name.startswith(("get", "set", "is")):
                         nomnamm_package += 1
         noi_package = len(interface_decls)
-        # LOC_Package: total lines in file
         loc_package = code.count("\n") + 1
 
-        # Collect all method names in file for CM calculation
+        # Simpan metrik package-level dalam dictionary berdasarkan package_name
+        package_metrics_map = {
+            package_name: {
+                'NOMNAMM_Package': nomnamm_package,
+                'NOI_Package': noi_package,
+                'LOC_Package': loc_package
+            }
+        }
+
+        # Kumpulkan semua nama method di file untuk CM calculation
         all_methods_in_file = [f.name for f in function_decls if not f.name.startswith(("get", "set", "is"))]
         for c in class_decls:
             if hasattr(c, 'body') and c.body and hasattr(c.body, 'members'):
                 for m in c.body.members:
                     if isinstance(m, node.FunctionDeclaration) and not m.name.startswith(("get", "set", "is")):
                         all_methods_in_file.append(m.name)
-
-        # --- CLASS-LEVEL METRICS ---
-        for class_decl in class_decls:
-            class_metrics = {}
-            class_metrics['LOC_Class'] = count_loc_type(str(class_decl))
-            class_metrics['LOCNAMM_Class'] = count_locnamm_type(class_decl)
-            class_metrics['CFNAMM_Class'] = count_cfnamm_type(class_decl)
-            class_metrics['NOAV_Class'] = count_noav_class(class_decl)
-            # For each method in class, count NOAV_Method
-            if hasattr(class_decl, 'body') and class_decl.body and hasattr(class_decl.body, 'members'):
-                for m in class_decl.body.members:
-                    if isinstance(m, node.FunctionDeclaration):
-                        method_code = str(m.body) if m.body else ""
-                        class_metrics[f'NOAV_Method_{m.name}'] = count_noav_method(method_code)
-                        class_metrics[f'CM_Method_{m.name}'] = count_cm_method(method_code, all_methods_in_file)
-            # ... store or process class_metrics as needed ...
-
-        # --- PACKAGE METRICS OUTPUT ---
-        package_metrics = {
-            'NOMNAMM_Package': nomnamm_package,
-            'NOI_Package': noi_package,
-            'LOC_Package': loc_package
-        }
-        # ... store or process package_metrics as needed ...
 
         datas = []
 
@@ -239,6 +219,9 @@ def extracted_method(file_path):
 
             woc_values = count_woc([cc for cc, *_ in methods_data.values()])
 
+            # Ambil metrik package-level dari dictionary
+            pkg_metrics = package_metrics_map.get(package_name, {'NOMNAMM_Package': 0, 'NOI_Package': 0, 'LOC_Package': 0})
+
             # Ensure woc_values aligns with methods_data if some methods have 0 CC
             # Use enumerate to keep track of index for woc_values
             for i, (name, (cc, loc, nest, mamcl, noav_method_val, cm)) in enumerate(methods_data.items()):
@@ -257,12 +240,13 @@ def extracted_method(file_path):
                     "LOC_type": loc_type,
                     "LOCNAMM_type": locnamm_type,
                     "CFNAMM_type": cfnamm_type,
-                    "NOMNAMM_Package": nomnamm_package,
-                    "NOI_Package": noi_package,
-                    "LOC_package": loc_package
+                    "NOMNAMM_Package": pkg_metrics['NOMNAMM_Package'],
+                    "NOI_Package": pkg_metrics['NOI_Package'],
+                    "LOC_package": pkg_metrics['LOC_Package']
                 })
 
         # Tambahkan fungsi top-level ke dalam hasil
+        pkg_metrics = package_metrics_map.get(package_name, {'NOMNAMM_Package': 0, 'NOI_Package': 0, 'LOC_Package': 0})
         for func in function_decls:
             body = str(func.body) if func.body else ""
             cc = count_cc_manual(body)
@@ -286,9 +270,9 @@ def extracted_method(file_path):
                 "LOC_type": 0, # Not applicable for top-level functions
                 "LOCNAMM_type": 0, # Not applicable for top-level functions
                 "CFNAMM_type": 0, # Not applicable for top-level functions
-                "NOMNAMM_Package": nomnamm_package,
-                "NOI_Package": noi_package,
-                "LOC_package": loc_package
+                "NOMNAMM_Package": pkg_metrics['NOMNAMM_Package'],
+                "NOI_Package": pkg_metrics['NOI_Package'],
+                "LOC_package": pkg_metrics['LOC_Package']
             })
 
         return datas if datas else [{
@@ -350,8 +334,22 @@ def extract_and_parse(file):
                 }])
 
             results = []
+            file_package_map = {}  # file_path -> package_name
+            file_code_map = {}     # file_path -> code string
+
+            # Pass 1: Kumpulkan hasil per file dan mapping file ke package
             for kotlin_file in kotlin_files:
                 try:
+                    with open(kotlin_file, "r", encoding="utf-8") as f:
+                        code = f.read()
+                    parser = Parser(code)
+                    result = parser.parse()
+                    if hasattr(result, 'package') and result.package:
+                        package_name = result.package.name if hasattr(result.package, 'name') else str(result.package)
+                    else:
+                        package_name = "UNKNOWN"
+                    file_package_map[kotlin_file] = package_name
+                    file_code_map[kotlin_file] = code
                     file_result = extracted_method(kotlin_file)
                     if file_result:
                         results.extend(file_result)
@@ -359,7 +357,7 @@ def extract_and_parse(file):
                     results.append({
                         "Package": "Error",
                         "Class": "Error",
-                        "Method": kotlin_file,  # Menampilkan file yang error
+                        "Method": kotlin_file,
                         "LOC": "Error",
                         "Max Nesting": 0,
                         "CC": 0,
@@ -375,6 +373,49 @@ def extract_and_parse(file):
                         "LOC_package": 0,
                         "Error": str(file_error)
                     })
+
+            # Pass 2: Hitung ulang metrik package-level secara agregat
+            # Kumpulkan semua file per package
+            package_files = {}
+            for file_path, pkg in file_package_map.items():
+                package_files.setdefault(pkg, []).append(file_path)
+
+            # Hitung metrik package-level agregat
+            package_metrics_map = {}
+            for pkg, files in package_files.items():
+                all_code = ""
+                all_functions = 0
+                all_interfaces = 0
+                for file_path in files:
+                    code = file_code_map[file_path]
+                    all_code += code + "\n"
+                    parser = Parser(code)
+                    result = parser.parse()
+                    declarations = result.declarations if hasattr(result, 'declarations') else []
+                    class_decls = [n for n in declarations if isinstance(n, node.ClassDeclaration)]
+                    interface_decls = [n for n in declarations if isinstance(n, node.InterfaceDeclaration)]
+                    function_decls = [n for n in declarations if isinstance(n, node.FunctionDeclaration)]
+                    all_functions += sum(1 for f in function_decls if not f.name.startswith(("get", "set", "is")))
+                    for c in class_decls:
+                        if hasattr(c, 'body') and c.body and hasattr(c.body, 'members'):
+                            for m in c.body.members:
+                                if isinstance(m, node.FunctionDeclaration) and not m.name.startswith(("get", "set", "is")):
+                                    all_functions += 1
+                    all_interfaces += len(interface_decls)
+                loc_package = all_code.count("\n") + 1
+                package_metrics_map[pkg] = {
+                    'NOMNAMM_Package': all_functions,
+                    'NOI_Package': all_interfaces,
+                    'LOC_Package': loc_package
+                }
+
+            # Update semua baris di results dengan metrik package-level agregat
+            for row in results:
+                pkg = row.get("Package", "UNKNOWN")
+                pkg_metrics = package_metrics_map.get(pkg, {'NOMNAMM_Package': 0, 'NOI_Package': 0, 'LOC_Package': 0})
+                row["NOMNAMM_Package"] = pkg_metrics['NOMNAMM_Package']
+                row["NOI_Package"] = pkg_metrics['NOI_Package']
+                row["LOC_package"] = pkg_metrics['LOC_Package']
 
             df = pd.DataFrame(results)
             
