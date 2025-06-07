@@ -56,23 +56,6 @@ def count_mamcl(code):
         max_chain = max(max_chain, current_chain)
     return max_chain
 
-def count_noav_method(method_code):
-    # Hitung jumlah atribut unik yang diakses melalui this.[property] (termasuk this?. dan this!!.)
-    attributes = set()
-    # Regex: cari this(.|?.|!!.)propertyName yang tidak diikuti '('
-    # Lebih toleran terhadap spasi dan variasi penulisan
-    pattern = re.compile(
-        r'\bthis\s*([\?\!]*\s*\.\s*)\s*([a-zA-Z_][a-zA-Z0-9_]*)\b(?!\s*\()'
-    )
-    for line in method_code.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith(("//", "/*", "*", "*/")):
-            continue
-        if stripped.startswith(("class ", "fun ", "interface ", "package ", "import ", "var ", "val ")):
-            continue
-        for match in pattern.finditer(stripped):
-            attributes.add(match.group(2))
-    return len(attributes)
 
 def count_cm_method(method_code, all_methods_in_file):
     """Count Coupling between Methods (CM)"""
@@ -147,6 +130,31 @@ def count_cfnamm_type(class_decl):
                     coupled += 1
     return coupled / len(methods) if methods else 0
 
+def count_noav_method_attrs(method_code):
+    """
+    Return set of unique (object, attribute) pairs accessed in the method.
+    """
+    attr_pattern = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*|this)\.([a-zA-Z_][a-zA-Z0-9_]*)(\s*\()?')
+    accesses = set()
+    lines = method_code.splitlines()
+    for line in lines:
+        line = re.sub(r'//.*', '', line)
+        line = re.sub(r'/\*.*\*/', '', line)
+        for match in attr_pattern.finditer(line):
+            obj = match.group(1)
+            attr = match.group(2)
+            if attr in {"if", "for", "while", "when", "catch", "case", "else", "return", "val", "var", "fun", "true", "false", "null"}:
+                continue
+            accesses.add((obj, attr))
+    return accesses
+
+def count_noav_method(method_code):
+    """
+    Count Number of Attributes Accessed in a Method (NOAV).
+    """
+    return len(count_noav_method_attrs(method_code))
+
+
 def extracted_method(file_path):
     try:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -192,6 +200,31 @@ def extracted_method(file_path):
                     if isinstance(m, node.FunctionDeclaration) and not m.name.startswith(("get", "set", "is")):
                         all_methods_in_file.append(m.name)
 
+        # --- Kumpulkan semua body method dan top-level function berdasarkan nama di seluruh file ---
+        all_method_bodies_by_name = {}
+        all_method_noav_per_body = {}
+        for class_decl in class_decls:
+            if not class_decl.body:
+                continue
+            for member in class_decl.body.members:
+                if isinstance(member, node.FunctionDeclaration):
+                    name = member.name
+                    body = str(member.body) if member.body else ""
+                    all_method_bodies_by_name.setdefault(name, []).append(body)
+                    all_method_noav_per_body.setdefault(name, []).append(len(count_noav_method_attrs(body)))
+        for func in function_decls:
+            name = func.name
+            body = str(func.body) if func.body else ""
+            all_method_bodies_by_name.setdefault(name, []).append(body)
+            all_method_noav_per_body.setdefault(name, []).append(len(count_noav_method_attrs(body)))
+        # --- END kumpulkan semua body method dan top-level function berdasarkan nama di seluruh file ---
+
+        # --- Hitung NOAV total (sum) untuk setiap nama method di seluruh file ---
+        global_noav_by_method_name = {}
+        for name, noav_list in all_method_noav_per_body.items():
+            global_noav_by_method_name[name] = sum(noav_list)
+        # --- END hitung NOAV total (sum) untuk setiap nama method di seluruh file ---
+
         datas = []
 
         for class_decl in class_decls:
@@ -205,7 +238,8 @@ def extracted_method(file_path):
 
             noav_class_val = count_noav_class(class_decl)
 
-            methods_data = {}
+            methods_cc = []
+            methods_info = []
             for member in class_decl.body.members:
                 if isinstance(member, node.FunctionDeclaration):
                     name = member.name
@@ -216,19 +250,19 @@ def extracted_method(file_path):
                     max_nest = manual_max_nesting(body)
                     mamcl = count_mamcl(body)
                     cm = count_cm_method(body, all_methods_in_file)
-                    noav_method_val = count_noav_method(body) 
+                    # Ambil NOAV total dari semua kemunculan method dengan nama yang sama
+                    noav_method_val = global_noav_by_method_name.get(name, 0)
 
-                    methods_data[name] = (cc, loc, max_nest, mamcl, noav_method_val, cm)
+                    methods_cc.append(cc)
+                    methods_info.append((name, cc, loc, max_nest, mamcl, noav_method_val, cm))
 
-            woc_values = count_woc([cc for cc, *_ in methods_data.values()])
+            woc_values = count_woc(methods_cc)
 
             # Ambil metrik package-level dari dictionary
             pkg_metrics = package_metrics_map.get(package_name, {'NOMNAMM_Package': 0, 'NOI_Package': 0, 'LOC_Package': 0})
 
-            # Ensure woc_values aligns with methods_data if some methods have 0 CC
-            # Use enumerate to keep track of index for woc_values
-            for i, (name, (cc, loc, nest, mamcl, noav_method_val, cm)) in enumerate(methods_data.items()):
-                woc = woc_values[i] if i < len(woc_values) else 0 # Fallback if woc_values is shorter for some reason
+            for i, (name, cc, loc, nest, mamcl, noav_method_val, cm) in enumerate(methods_info):
+                woc = woc_values[i] if i < len(woc_values) else 0
                 datas.append({
                     "Package": package_name,
                     "Class": class_name,
@@ -238,7 +272,7 @@ def extracted_method(file_path):
                     "CC": cc,
                     "WOC": woc,
                     "MaMCL": mamcl,
-                    "NOAV": noav_method_val, 
+                    "NOAV": noav_method_val,
                     "CM": cm,
                     "LOC_type": loc_type,
                     "LOCNAMM_type": locnamm_type,
@@ -256,7 +290,8 @@ def extracted_method(file_path):
             loc = body.count("\n") + 1 if body else 0
             max_nest = manual_max_nesting(body)
             mamcl = count_mamcl(body)
-            noav_method_val = count_noav_method(body) 
+            # Gunakan NOAV gabungan dari seluruh file (bukan hanya dari body sendiri)
+            noav_method_val = global_noav_by_method_name.get(func.name, 0)
             cm = count_cm_method(body, all_methods_in_file)
             
             datas.append({
