@@ -456,7 +456,12 @@ def extract_and_parse(file):
                 row["LOC_package"] = pkg_metrics['LOC_Package']
 
             df = pd.DataFrame(results)
-            
+
+            # --- PATCH: Update NOAV agar semua method dengan nama sama dapat total NOAV seluruh project ---
+            noav_sum_by_method = df.groupby("Method")["NOAV"].sum().to_dict()
+            df["NOAV"] = df["Method"].map(noav_sum_by_method)
+            # --- END PATCH ---
+
             # Tambahkan baris total
             numeric_columns = ['LOC', 'Max Nesting', 'CC', 'WOC', 'MaMCL', 'NOAV', 'CM', 
                                 'LOC_type', 'LOCNAMM_type', 'CFNAMM_type', 'NOMNAMM_Package', 
