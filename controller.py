@@ -57,18 +57,21 @@ def count_mamcl(code):
     return max_chain
 
 def count_noav_method(method_code):
-    # Hitung total akses atribut (bukan hanya unik)
-    attributes = []
-    pattern = re.compile(r'\b(?:this|[a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b(?!\s*\()')
+    # Hitung jumlah atribut unik yang diakses melalui this.[property] (termasuk this?. dan this!!.)
+    attributes = set()
+    # Regex: cari this(.|?.|!!.)propertyName yang tidak diikuti '('
+    # Lebih toleran terhadap spasi dan variasi penulisan
+    pattern = re.compile(
+        r'\bthis\s*([\?\!]*\s*\.\s*)\s*([a-zA-Z_][a-zA-Z0-9_]*)\b(?!\s*\()'
+    )
     for line in method_code.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith(("//", "/*", "*", "*/")):
             continue
-        # Skip declarations
         if stripped.startswith(("class ", "fun ", "interface ", "package ", "import ", "var ", "val ")):
             continue
-        for match in pattern.findall(stripped):
-            attributes.append(match)
+        for match in pattern.finditer(stripped):
+            attributes.add(match.group(2))
     return len(attributes)
 
 def count_cm_method(method_code, all_methods_in_file):
