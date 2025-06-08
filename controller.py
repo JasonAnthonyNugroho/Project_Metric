@@ -130,30 +130,36 @@ def count_cfnamm_type(class_decl):
                     coupled += 1
     return coupled / len(methods) if methods else 0
 
-def count_noav_method_attrs(method_code):
+def count_noav(class_node, method_code):
     """
-    Return set of unique (object, attribute) pairs accessed in the method.
+    Menghitung NOAV (Number of Attributes Accessed in a Method).
+    class_node: node kelas hasil parsing AST
+    method_code: isi method (string)
     """
-    attr_pattern = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*|this)\.([a-zA-Z_][a-zA-Z0-9_]*)(\s*\()?')
-    accesses = set()
-    lines = method_code.splitlines()
-    for line in lines:
-        line = re.sub(r'//.*', '', line)
-        line = re.sub(r'/\*.*\*/', '', line)
-        for match in attr_pattern.finditer(line):
-            obj = match.group(1)
-            attr = match.group(2)
-            if attr in {"if", "for", "while", "when", "catch", "case", "else", "return", "val", "var", "fun", "true", "false", "null"}:
-                continue
-            accesses.add((obj, attr))
-    return accesses
+    attribute_names = []
+    accessed_attributes = set()
 
-def count_noav_method(method_code):
-    """
-    Count Number of Attributes Accessed in a Method (NOAV).
-    """
-    return len(count_noav_method_attrs(method_code))
+    # 1. Kumpulkan semua nama atribut dari class
+    if hasattr(class_node, 'body') and hasattr(class_node.body, 'members'):
+        for member in class_node.body.members:
+            if hasattr(node, 'PropertyDeclaration') and isinstance(member, node.PropertyDeclaration):
+                if hasattr(member, 'declaration') and hasattr(member.declaration, 'name'):
+                    attr_name = member.declaration.name
+                    attribute_names.append(attr_name)
+                elif hasattr(member, 'name'):
+                    attribute_names.append(member.name)
 
+    # 2. Cari yang dipakai di dalam method_code (asumsikan method_code dalam bentuk string)
+    for attr in attribute_names:
+        pattern = r'\b' + re.escape(attr) + r'\b'
+        if re.search(pattern, method_code):
+            accessed_attributes.add(attr)
+            # print(f"Atribut '{attr}' diakses di method.")
+
+    # 3. Return jumlah atribut unik yang diakses
+    # print(f"Total atribut: {len(attribute_names)}")
+    # print(f"Atribut yang diakses: {len(accessed_attributes)}")
+    return len(accessed_attributes)
 
 def extracted_method(file_path):
     try:
@@ -200,31 +206,6 @@ def extracted_method(file_path):
                     if isinstance(m, node.FunctionDeclaration) and not m.name.startswith(("get", "set", "is")):
                         all_methods_in_file.append(m.name)
 
-        # --- Kumpulkan semua body method dan top-level function berdasarkan nama di seluruh file ---
-        all_method_bodies_by_name = {}
-        all_method_noav_per_body = {}
-        for class_decl in class_decls:
-            if not class_decl.body:
-                continue
-            for member in class_decl.body.members:
-                if isinstance(member, node.FunctionDeclaration):
-                    name = member.name
-                    body = str(member.body) if member.body else ""
-                    all_method_bodies_by_name.setdefault(name, []).append(body)
-                    all_method_noav_per_body.setdefault(name, []).append(len(count_noav_method_attrs(body)))
-        for func in function_decls:
-            name = func.name
-            body = str(func.body) if func.body else ""
-            all_method_bodies_by_name.setdefault(name, []).append(body)
-            all_method_noav_per_body.setdefault(name, []).append(len(count_noav_method_attrs(body)))
-        # --- END kumpulkan semua body method dan top-level function berdasarkan nama di seluruh file ---
-
-        # --- Hitung NOAV total (sum) untuk setiap nama method di seluruh file ---
-        global_noav_by_method_name = {}
-        for name, noav_list in all_method_noav_per_body.items():
-            global_noav_by_method_name[name] = sum(noav_list)
-        # --- END hitung NOAV total (sum) untuk setiap nama method di seluruh file ---
-
         datas = []
 
         for class_decl in class_decls:
@@ -250,8 +231,8 @@ def extracted_method(file_path):
                     max_nest = manual_max_nesting(body)
                     mamcl = count_mamcl(body)
                     cm = count_cm_method(body, all_methods_in_file)
-                    # Ambil NOAV total dari semua kemunculan method dengan nama yang sama
-                    noav_method_val = global_noav_by_method_name.get(name, 0)
+                    # Hitung NOAV dengan fungsi baru
+                    noav_method_val = count_noav(class_decl, body)
 
                     methods_cc.append(cc)
                     methods_info.append((name, cc, loc, max_nest, mamcl, noav_method_val, cm))
@@ -290,8 +271,8 @@ def extracted_method(file_path):
             loc = body.count("\n") + 1 if body else 0
             max_nest = manual_max_nesting(body)
             mamcl = count_mamcl(body)
-            # Gunakan NOAV gabungan dari seluruh file (bukan hanya dari body sendiri)
-            noav_method_val = global_noav_by_method_name.get(func.name, 0)
+            # Hitung NOAV dengan fungsi baru, class_node None untuk top-level
+            noav_method_val = 0
             cm = count_cm_method(body, all_methods_in_file)
             
             datas.append({
@@ -301,13 +282,13 @@ def extracted_method(file_path):
                 "LOC": loc,
                 "Max Nesting": max_nest,
                 "CC": cc,
-                "WOC": 1 if cc > 0 else 0, # WOC for top-level function is 1 if it has CC
+                "WOC": 1 if cc > 0 else 0,
                 "MaMCL": mamcl,
                 "NOAV": noav_method_val, 
                 "CM": cm,
-                "LOC_type": 0, # Not applicable for top-level functions
-                "LOCNAMM_type": 0, # Not applicable for top-level functions
-                "CFNAMM_type": 0, # Not applicable for top-level functions
+                "LOC_type": 0,
+                "LOCNAMM_type": 0,
+                "CFNAMM_type": 0,
                 "NOMNAMM_Package": pkg_metrics['NOMNAMM_Package'],
                 "NOI_Package": pkg_metrics['NOI_Package'],
                 "LOC_package": pkg_metrics['LOC_Package']
