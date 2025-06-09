@@ -200,7 +200,7 @@ def count_noav(class_node, method_code, method_node=None):
         keywords = {
             "if", "for", "while", "when", "catch", "case", "else", "return", "val", "var", "fun",
             "true", "false", "null", "override", "private", "public", "protected", "internal", "class",
-            "object", "interface", "companion", "constructor", "init", "super", "this", "in", "is", "as"
+            "object", "interface", "companion", "constructor", "init", "super", "this", "in", "is", "as","do", "try", "finally", "throw", "typeof", "sealed", "data", "lateinit"
         }
         if varname in keywords or varname.isdigit() or varname in param_vars or varname in local_vars:
             continue
