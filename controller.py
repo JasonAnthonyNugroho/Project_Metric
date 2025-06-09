@@ -225,31 +225,49 @@ def get_class_properties(class_node):
     return props
 
 def noav_method(class_node, method_node):
-    """Menghitung variabel yang diakses dari body fungsi dengan traversal rekursif mendalam."""
-    local_vars = set()
-    local_access = 0
-    loc_aces = set()
-    
-    # Perbaiki: class_node.body.members, bukan class_node.members
+    """
+    Menghitung jumlah atribut class yang diakses di seluruh body fungsi (NOAV), 
+    tanpa tergantung pada nama method/parameter/lokal.
+    Perbaikan: juga menghitung akses via this.<prop> dan akses langsung pada baris yang mengandung method call.
+    """
+    # Ambil semua property class
+    class_props = set()
     if hasattr(class_node, 'body') and hasattr(class_node.body, 'members'):
         for member in class_node.body.members:
             if isinstance(member, node.PropertyDeclaration):
                 if hasattr(member, 'declaration') and hasattr(member.declaration, 'name'):
-                    local_vars.add(member.declaration.name)
+                    class_props.add(member.declaration.name)
                 elif hasattr(member, 'name'):
-                    local_vars.add(member.name)
+                    class_props.add(member.name)
 
-    # method_node.body adalah AST, harus diubah ke string
+    # Ambil semua nama yang tidak boleh dihitung (parameter dan variabel lokal)
+    param_vars = set()
+    if hasattr(method_node, 'parameters'):
+        for param in method_node.parameters:
+            if hasattr(param, 'name'):
+                param_vars.add(param.name)
+    local_vars = set()
     body_str = str(method_node.body) if hasattr(method_node, 'body') and method_node.body else ""
-    for line in body_str.split("\n"):
-        stripped = line.strip()
-        for keyword in local_vars:
-            if keyword in stripped:
-                local_access += 1
-                loc_aces.add(keyword)
+    for match in re.finditer(r'\b(?:val|var)\s+([a-zA-Z_][a-zA-Z0-9_]*)', body_str):
+        local_vars.add(match.group(1))
 
-    return len(loc_aces.intersection(local_vars))
-
+    accessed = set()
+    # Cek akses this.<prop> dan super.<prop>
+    for prop in class_props:
+        if prop in param_vars or prop in local_vars:
+            continue
+        # Cek akses this.<prop>
+        if re.search(r'\bthis\.' + re.escape(prop) + r'\b', body_str):
+            accessed.add(prop)
+        # Cek akses super.<prop>
+        if re.search(r'\bsuper\.' + re.escape(prop) + r'\b', body_str):
+            accessed.add(prop)
+        # Cek akses langsung (bukan bagian dari kata lain, bukan param/lokal)
+        # Perbaikan: hitung juga jika property dipakai dalam method call, assignment, atau argumen
+        # Contoh: unregisterReceiver(mMessageReceiver)
+        if re.search(r'\b' + re.escape(prop) + r'\b', body_str):
+            accessed.add(prop)
+    return len(accessed)
 
 
 def extracted_method(file_path):
@@ -335,16 +353,17 @@ def extracted_method(file_path):
 
             for i, (name, cc, loc, nest, mamcl, noav_method_val, cm) in enumerate(methods_info):
                 woc = woc_values[i] if i < len(woc_values) else 0
+                # Method kolom: hanya nama method saja (tanpa gabungan NOAV)
                 datas.append({
                     "Package": package_name,
                     "Class": class_name,
-                    "Method": name,
+                    "Method": name,  # hanya nama method
                     "LOC": loc,
                     "Max Nesting": nest,
                     "CC": cc,
                     "WOC": woc,
                     "MaMCL": mamcl,
-                    "NOAV": noav_method_val,
+                    "NOAV": noav_method_val,  # NOAV tetap individual per baris
                     "CM": cm,
                     "LOC_type": loc_type,
                     "LOCNAMM_type": locnamm_type,
@@ -359,7 +378,7 @@ def extracted_method(file_path):
         for func in function_decls:
             body = str(func.body) if func.body else ""
             cc = count_cc_manual(body)
-            loc = body.count("\n") + 1 if body else 0
+            loc = body.count("\n") + 1 if func.body else 0
             max_nest = manual_max_nesting(body)
             mamcl = count_mamcl(body)
             # Hitung NOAV dengan fungsi baru, class_node None untuk top-level
@@ -530,8 +549,9 @@ def extract_and_parse(file):
             df = pd.DataFrame(results)
 
             # --- PATCH: Update NOAV agar semua method dengan nama sama dapat total NOAV seluruh project ---
-            noav_sum_by_method = df.groupby("Method")["NOAV"].sum().to_dict()
-            df["NOAV"] = df["Method"].map(noav_sum_by_method)
+            # HAPUS/COMMENT PATCH INI AGAR NOAV TIDAK DIJUMLAHKAN
+            # noav_sum_by_method = df.groupby("Method")["NOAV"].sum().to_dict()
+            # df["NOAV"] = df["Method"].map(noav_sum_by_method)
             # --- END PATCH ---
 
             # Tambahkan baris total
