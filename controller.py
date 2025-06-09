@@ -132,34 +132,67 @@ def count_cfnamm_type(class_decl):
 
 def count_noav(class_node, method_code):
     """
-    Menghitung NOAV (Number of Attributes Accessed in a Method).
-    class_node: node kelas hasil parsing AST
-    method_code: isi method (string)
+    Menghitung NOAV (Number of Attributes Accessed in a Method) dengan benar.
+    1. Kumpulkan semua nama atribut (property/field) dari class (termasuk companion object jika ada).
+    2. Kumpulkan semua nama atribut yang diakses di method (this.<var> atau akses langsung <var>).
+    3. Intersect kedua set.
+    4. Return jumlah hasil irisan.
     """
-    attribute_names = []
-    accessed_attributes = set()
+    declared_vars = set()
 
-    # 1. Kumpulkan semua nama atribut dari class
+    # 1. Kumpulkan semua nama atribut dari class (PropertyDeclaration dan VariableDeclaration)
     if hasattr(class_node, 'body') and hasattr(class_node.body, 'members'):
         for member in class_node.body.members:
+            # PropertyDeclaration (val/var property)
             if hasattr(node, 'PropertyDeclaration') and isinstance(member, node.PropertyDeclaration):
+                # Kotlin: member.declaration.name atau member.name
                 if hasattr(member, 'declaration') and hasattr(member.declaration, 'name'):
-                    attr_name = member.declaration.name
-                    attribute_names.append(attr_name)
+                    declared_vars.add(member.declaration.name)
                 elif hasattr(member, 'name'):
-                    attribute_names.append(member.name)
+                    declared_vars.add(member.name)
+            # VariableDeclaration (jarang, tapi bisa saja)
+            elif hasattr(node, 'VariableDeclaration') and isinstance(member, node.VariableDeclaration):
+                if hasattr(member, 'name'):
+                    declared_vars.add(member.name)
+            # Companion object property
+            elif hasattr(node, 'ObjectDeclaration') and isinstance(member, node.ObjectDeclaration):
+                if hasattr(member, 'body') and hasattr(member.body, 'members'):
+                    for submember in member.body.members:
+                        if hasattr(node, 'PropertyDeclaration') and isinstance(submember, node.PropertyDeclaration):
+                            if hasattr(submember, 'declaration') and hasattr(submember.declaration, 'name'):
+                                declared_vars.add(submember.declaration.name)
+                            elif hasattr(submember, 'name'):
+                                declared_vars.add(submember.name)
+                        elif hasattr(node, 'VariableDeclaration') and isinstance(submember, node.VariableDeclaration):
+                            if hasattr(submember, 'name'):
+                                declared_vars.add(submember.name)
 
-    # 2. Cari yang dipakai di dalam method_code (asumsikan method_code dalam bentuk string)
-    for attr in attribute_names:
-        pattern = r'\b' + re.escape(attr) + r'\b'
-        if re.search(pattern, method_code):
-            accessed_attributes.add(attr)
-            # print(f"Atribut '{attr}' diakses di method.")
+    # 2. Kumpulkan semua nama variable yang diakses di method_code
+    accessed_vars = set()
+    # this.<var>
+    accessed_vars.update(re.findall(r'\bthis\.([a-zA-Z_][a-zA-Z0-9_]*)\b', method_code))
+    # akses langsung (bukan didahului titik/angka/huruf/underscore, dan bukan method call)
+    for match in re.finditer(r'(?<![\w\.])([a-zA-Z_][a-zA-Z0-9_]*)\b', method_code):
+        varname = match.group(1)
+        # Cek apakah setelah varname ada '(' (method call), jika iya skip
+        idx = match.end()
+        after = method_code[idx:idx+1]
+        if after == '(':
+            continue
+        accessed_vars.add(varname)
+    # filter keyword dan angka
+    keywords = {
+        "if", "for", "while", "when", "catch", "case", "else", "return", "val", "var", "fun",
+        "true", "false", "null", "override", "private", "public", "protected", "internal", "class",
+        "object", "interface", "companion", "constructor", "init", "super", "this", "in", "is", "as"
+    }
+    accessed_vars = {t for t in accessed_vars if t not in keywords and not t.isdigit()}
 
-    # 3. Return jumlah atribut unik yang diakses
-    # print(f"Total atribut: {len(attribute_names)}")
-    # print(f"Atribut yang diakses: {len(accessed_attributes)}")
-    return len(accessed_attributes)
+    # 3. Intersect
+    intersected = declared_vars & accessed_vars
+
+    # 4. Return jumlah hasil irisan
+    return len(intersected)
 
 def extracted_method(file_path):
     try:
@@ -231,7 +264,7 @@ def extracted_method(file_path):
                     max_nest = manual_max_nesting(body)
                     mamcl = count_mamcl(body)
                     cm = count_cm_method(body, all_methods_in_file)
-                    # Hitung NOAV dengan fungsi baru
+                    # Hitung NOAV dengan class_decl (class yang benar)
                     noav_method_val = count_noav(class_decl, body)
 
                     methods_cc.append(cc)
