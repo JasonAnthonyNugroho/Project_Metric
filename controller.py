@@ -90,8 +90,6 @@ def count_loc_type(class_code):
     return class_code.count("\n") + 1
 
 
-
-
 def count_locnamm_type(class_decl):
     count = 0
     if hasattr(class_decl, 'body') and class_decl.body and hasattr(class_decl.body, 'members'):
@@ -212,6 +210,48 @@ def count_noav(class_node, method_code, method_node=None):
     # 5. Return jumlah hasil irisan
     return len(intersected)
 
+def get_class_properties(class_node):
+    """
+    Ambil semua nama property/field dari class_node.
+    """
+    props = set()
+    if hasattr(class_node, 'body') and hasattr(class_node.body, 'members'):
+        for member in class_node.body.members:
+            if isinstance(member, node.PropertyDeclaration):
+                if hasattr(member, 'declaration') and hasattr(member.declaration, 'name'):
+                    props.add(member.declaration.name)
+                elif hasattr(member, 'name'):
+                    props.add(member.name)
+    return props
+
+def noav_method(class_node, method_node):
+    """Menghitung variabel yang diakses dari body fungsi dengan traversal rekursif mendalam."""
+    local_vars = set()
+    local_access = 0
+    loc_aces = set()
+    
+    # Perbaiki: class_node.body.members, bukan class_node.members
+    if hasattr(class_node, 'body') and hasattr(class_node.body, 'members'):
+        for member in class_node.body.members:
+            if isinstance(member, node.PropertyDeclaration):
+                if hasattr(member, 'declaration') and hasattr(member.declaration, 'name'):
+                    local_vars.add(member.declaration.name)
+                elif hasattr(member, 'name'):
+                    local_vars.add(member.name)
+
+    # method_node.body adalah AST, harus diubah ke string
+    body_str = str(method_node.body) if hasattr(method_node, 'body') and method_node.body else ""
+    for line in body_str.split("\n"):
+        stripped = line.strip()
+        for keyword in local_vars:
+            if keyword in stripped:
+                local_access += 1
+                loc_aces.add(keyword)
+
+    return len(loc_aces.intersection(local_vars))
+
+
+
 def extracted_method(file_path):
     try:
         with open(file_path, "r", encoding="utf-8") as f:
@@ -282,8 +322,8 @@ def extracted_method(file_path):
                     max_nest = manual_max_nesting(body)
                     mamcl = count_mamcl(body)
                     cm = count_cm_method(body, all_methods_in_file)
-                    # Hitung NOAV dengan class_decl (class yang benar)
-                    noav_method_val = count_noav(class_decl, body)
+                    # Ganti pemanggilan NOAV ke noav_method
+                    noav_method_val = noav_method(class_decl, member)
 
                     methods_cc.append(cc)
                     methods_info.append((name, cc, loc, max_nest, mamcl, noav_method_val, cm))
