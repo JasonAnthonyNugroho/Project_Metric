@@ -90,19 +90,7 @@ def count_loc_type(class_code):
     return class_code.count("\n") + 1
 
 
-def count_noav_class(class_decl):
-    count = 0
-    # Ensure class_decl.body and class_decl.body.members exist
-    if hasattr(class_decl, 'body') and class_decl.body and hasattr(class_decl.body, 'members'):
-        for member in class_decl.body.members:
-            # Only count property/variable declarations at the class level
-            if hasattr(node, 'PropertyDeclaration') and isinstance(member, node.PropertyDeclaration):
-                count += 1  # Increment for each class-level property
-            # Also check for VariableDeclaration, but typically not used for class-level in Kopyt
-            elif hasattr(node, 'VariableDeclaration') and isinstance(member, node.VariableDeclaration):
-                # Not incrementing count here, as class-level variables are usually PropertyDeclaration
-                pass 
-    return count  # Total number of class-level attributes (properties/fields)
+
 
 def count_locnamm_type(class_decl):
     count = 0
@@ -130,13 +118,30 @@ def count_cfnamm_type(class_decl):
                     coupled += 1
     return coupled / len(methods) if methods else 0
 
-def count_noav(class_node, method_code):
+def count_noav_class(class_decl):
+    count = 0
+    # Ensure class_decl.body and class_decl.body.members exist
+    if hasattr(class_decl, 'body') and class_decl.body and hasattr(class_decl.body, 'members'):
+        for member in class_decl.body.members:
+            # Only count property/variable declarations at the class level
+            if isinstance(member, node.PropertyDeclaration):
+
+
+                count += 1  # Increment for each class-level property
+            # Also check for VariableDeclaration, but typically not used for class-level in Kopyt
+            elif hasattr(node, 'VariableDeclaration') and isinstance(member, node.VariableDeclaration):
+                # Not incrementing count here, as class-level variables are usually PropertyDeclaration
+                pass 
+    return count  # Total number of class-level attributes (properties/fields)
+
+def count_noav(class_node, method_code, method_node=None):
     """
     Menghitung NOAV (Number of Attributes Accessed in a Method) dengan benar.
     1. Kumpulkan semua nama atribut (property/field) dari class (termasuk companion object jika ada).
-    2. Kumpulkan semua nama atribut yang diakses di method (this.<var> atau akses langsung <var>).
-    3. Intersect kedua set.
-    4. Return jumlah hasil irisan.
+    2. Kumpulkan semua nama atribut yang diakses di method (this.<var>, super.<var>, atau akses langsung <var>).
+    3. Exclude variabel lokal dan parameter method dari akses langsung.
+    4. Intersect kedua set.
+    5. Return jumlah hasil irisan.
     """
     declared_vars = set()
 
@@ -144,26 +149,25 @@ def count_noav(class_node, method_code):
     if hasattr(class_node, 'body') and hasattr(class_node.body, 'members'):
         for member in class_node.body.members:
             # PropertyDeclaration (val/var property)
-            if hasattr(node, 'PropertyDeclaration') and isinstance(member, node.PropertyDeclaration):
-                # Kotlin: member.declaration.name atau member.name
+            if isinstance(member, node.PropertyDeclaration):
                 if hasattr(member, 'declaration') and hasattr(member.declaration, 'name'):
                     declared_vars.add(member.declaration.name)
                 elif hasattr(member, 'name'):
                     declared_vars.add(member.name)
             # VariableDeclaration (jarang, tapi bisa saja)
-            elif hasattr(node, 'VariableDeclaration') and isinstance(member, node.VariableDeclaration):
+            elif isinstance(member, node.VariableDeclaration):
                 if hasattr(member, 'name'):
                     declared_vars.add(member.name)
-            # Companion object property
-            elif hasattr(node, 'ObjectDeclaration') and isinstance(member, node.ObjectDeclaration):
+            # Companion object property (hanya jika object declaration bernama 'Companion')
+            elif isinstance(member, node.ObjectDeclaration) and getattr(member, 'name', None) == "Companion":
                 if hasattr(member, 'body') and hasattr(member.body, 'members'):
                     for submember in member.body.members:
-                        if hasattr(node, 'PropertyDeclaration') and isinstance(submember, node.PropertyDeclaration):
+                        if isinstance(submember, node.PropertyDeclaration):
                             if hasattr(submember, 'declaration') and hasattr(submember.declaration, 'name'):
                                 declared_vars.add(submember.declaration.name)
                             elif hasattr(submember, 'name'):
                                 declared_vars.add(submember.name)
-                        elif hasattr(node, 'VariableDeclaration') and isinstance(submember, node.VariableDeclaration):
+                        elif isinstance(submember, node.VariableDeclaration):
                             if hasattr(submember, 'name'):
                                 declared_vars.add(submember.name)
 
@@ -171,27 +175,41 @@ def count_noav(class_node, method_code):
     accessed_vars = set()
     # this.<var>
     accessed_vars.update(re.findall(r'\bthis\.([a-zA-Z_][a-zA-Z0-9_]*)\b', method_code))
+    # super.<var>
+    accessed_vars.update(re.findall(r'\bsuper\.([a-zA-Z_][a-zA-Z0-9_]*)\b', method_code))
+
+    # 3. Exclude variabel lokal dan parameter method dari akses langsung
+    local_vars = set()
+    param_vars = set()
+    if method_node and hasattr(method_node, 'parameters'):
+        for param in method_node.parameters:
+            if hasattr(param, 'name'):
+                param_vars.add(param.name)
+    # Cari variabel lokal (val/var di dalam body method)
+    for match in re.finditer(r'\b(?:val|var)\s+([a-zA-Z_][a-zA-Z0-9_]*)', method_code):
+        local_vars.add(match.group(1))
+
     # akses langsung (bukan didahului titik/angka/huruf/underscore, dan bukan method call)
     for match in re.finditer(r'(?<![\w\.])([a-zA-Z_][a-zA-Z0-9_]*)\b', method_code):
         varname = match.group(1)
-        # Cek apakah setelah varname ada '(' (method call), jika iya skip
         idx = match.end()
         after = method_code[idx:idx+1]
         if after == '(':
             continue
+        # Exclude keyword, angka, parameter, dan variabel lokal
+        keywords = {
+            "if", "for", "while", "when", "catch", "case", "else", "return", "val", "var", "fun",
+            "true", "false", "null", "override", "private", "public", "protected", "internal", "class",
+            "object", "interface", "companion", "constructor", "init", "super", "this", "in", "is", "as"
+        }
+        if varname in keywords or varname.isdigit() or varname in param_vars or varname in local_vars:
+            continue
         accessed_vars.add(varname)
-    # filter keyword dan angka
-    keywords = {
-        "if", "for", "while", "when", "catch", "case", "else", "return", "val", "var", "fun",
-        "true", "false", "null", "override", "private", "public", "protected", "internal", "class",
-        "object", "interface", "companion", "constructor", "init", "super", "this", "in", "is", "as"
-    }
-    accessed_vars = {t for t in accessed_vars if t not in keywords and not t.isdigit()}
 
-    # 3. Intersect
+    # 4. Intersect
     intersected = declared_vars & accessed_vars
 
-    # 4. Return jumlah hasil irisan
+    # 5. Return jumlah hasil irisan
     return len(intersected)
 
 def extracted_method(file_path):
